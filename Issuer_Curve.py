@@ -13,13 +13,6 @@ import os
 import base64
 from statsmodels.stats.stattools import durbin_watson
 
-# Access the API key from Streamlit Secrets
-plotly_api_key = st.secrets["leozaza"]
-
-# Optional: Set up Plotly configuration if the API key is needed
-import os
-os.environ["leozaza"] = plotly_api_key  # If the API key needs to be an environment variable
-
 # =====================
 # 1. Page Configuration
 # =====================
