@@ -158,31 +158,34 @@ def perform_nss_regression(t, y):
 # =====================
 # 5. Introduction Section
 # =====================
+# 5. Introduction Section
 def introduction():
     logo_path = get_logo_path()
     try:
-        # Display logo in its own container
-        with st.container():
-            st.image(logo_path, width=200)
-        
+        # Read the logo image in binary
+        with open(logo_path, "rb") as image_file:
+            encoded_image = base64.b64encode(image_file.read()).decode()
+
+        # Display logo, introduction text, and button all aligned to the left
+        st.image(logo_path, width=200)
         st.title("Welcome to the Bond Analysis Dashboard")
         st.markdown("""
             This application allows you to visualize and analyze bond yields and spreads relative to a regression-based yield curve.
             Use the sidebar to upload your bond data and customize your analysis.
+
+            ### How to Use:
+            1. **Upload Your Excel File:** Ensure your Excel file contains the required columns.
+            2. **Customize Your Analysis:** Choose metrics, axes, and filters.
+            3. **Interpret the Results:** Explore the charts and residual analysis to identify potential investment opportunities.
         """)
 
-        # Add spacing
-        st.write("\n")
-
-        # Proceed button in its own container
-        with st.container():
-            proceed = st.button("Proceed to Dashboard", key="proceed_button_unique")
-            if proceed:
-                st.session_state['intro_done'] = True
-                # Streamlit automatically reruns when session state changes
-
+        # Place the "Proceed to Dashboard" button below the text
+        if st.button("Proceed to Dashboard", key="proceed_button_unique"):
+            st.session_state['intro_done'] = True
+            # Streamlit automatically reruns the script on interaction
     except FileNotFoundError:
         st.warning("Logo image not found. Please ensure the logo is in the app directory.")
+
 
 def get_logo_path():
     """
@@ -191,7 +194,216 @@ def get_logo_path():
     return os.path.join(os.getcwd(), "logo.png")
 
 # =====================
-# 6. Residual Analysis Function
+# 6. Main Application
+# =====================
+def main_app(df, actual_column, selected_horizontal_axis, filtered_df):
+    # Implement the "Main Chart" section only
+
+    if filtered_df.empty:
+        st.warning("No bonds match the selected filters.")
+        return
+
+    # =====================
+    # Residuals Calculation using NSS Regression
+    # =====================
+    independent_var = selected_horizontal_axis
+
+    if len(filtered_df) < 6:
+        st.warning("Not enough data points to perform NSS regression. At least 6 points are required.")
+    else:
+        t = filtered_df[independent_var].values
+        y = filtered_df[actual_column].values
+
+        # Data Validation: Ensure no zero or negative Duration
+        if np.any(t <= 0):
+            st.error(f"{independent_var} must be positive for NSS regression.")
+        else:
+            # Perform NSS regression
+            y_pred, params = perform_nss_regression(t, y)
+
+            if y_pred is not None:
+                # Add regression predictions to the DataFrame
+                filtered_df = filtered_df.copy()
+                filtered_df['Regression_Predicted'] = y_pred
+
+                # Calculate residuals
+                filtered_df['Residual'] = filtered_df[actual_column] - filtered_df['Regression_Predicted']
+
+                # Split data into overvalued and undervalued based on residuals
+                overvalued_df = filtered_df[filtered_df['Residual'] < 0]  # Negative Residuals: Overvalued
+                undervalued_df = filtered_df[filtered_df['Residual'] > 0]  # Positive Residuals: Undervalued
+
+                # =====================
+                # Plotting
+                # =====================
+                fig = go.Figure()
+
+                # Add regression curve
+                sorted_df = filtered_df.sort_values(by=independent_var)
+                fig.add_trace(
+                    go.Scatter(
+                        x=sorted_df[independent_var],
+                        y=sorted_df['Regression_Predicted'],
+                        mode='lines',
+                        name='Regression Curve',
+                        line=dict(color='darkblue', width=4)  # Increased width and dark blue
+                    )
+                )
+
+                # Define y_format_str based on the selected vertical axis
+                if actual_column == 'Yield':
+                    y_format_str = "<b>{}</b>: %{{y:.2f}}%<br>".format(actual_column)
+                else:
+                    y_format_str = "<b>{}</b>: %{{y:.0f}} bps<br>".format(actual_column)
+
+                # Define rating information if available
+                if 'Rating' in df.columns:
+                    rating_info = "<b>Rating:</b> %{{customdata[1]}}<br>"
+                else:
+                    rating_info = ""
+
+                # Construct the hovertemplate using str.format() and properly escaped placeholders
+                hovertemplate = (
+                    "<b>ISIN:</b> %{{customdata[0]}}<br>"
+                    "{}"
+                    "<b>{}</b>: %{{x:.2f}} yrs<br>"
+                    "{}<extra></extra>"
+                ).format(
+                    y_format_str,
+                    selected_horizontal_axis,
+                    rating_info
+                )
+
+                # Add Bonds Potentially Undervalued (Green)
+                fig.add_trace(
+                    go.Scatter(
+                        x=undervalued_df[independent_var],
+                        y=undervalued_df[actual_column],
+                        mode='markers',
+                        name='Potentially Undervalued Bonds',
+                        marker=dict(
+                            color='green',
+                            size=12,
+                            symbol='circle-open',
+                            line=dict(width=2, color='green')
+                        ),
+                        hovertemplate=hovertemplate,
+                        customdata=undervalued_df[['ISIN', 'Rating']].values if 'Rating' in df.columns else undervalued_df[['ISIN']].values
+                    )
+                )
+
+                # Add Bonds Potentially Overvalued (Red)
+                fig.add_trace(
+                    go.Scatter(
+                        x=overvalued_df[independent_var],
+                        y=overvalued_df[actual_column],
+                        mode='markers',
+                        name='Potentially Overvalued Bonds',
+                        marker=dict(
+                            color='red',
+                            size=12,
+                            symbol='circle-open',
+                            line=dict(width=2, color='red')
+                        ),
+                        hovertemplate=hovertemplate,
+                        customdata=overvalued_df[['ISIN', 'Rating']].values if 'Rating' in df.columns else overvalued_df[['ISIN']].values
+                    )
+                )
+
+                # Update layout with corrected Y-axis formatting and larger fonts
+                if actual_column == 'Yield':
+                    fig.update_yaxes(tickformat=".2f")  # Display as is, e.g., 3.00%
+                    y_axis_title = f"<b>{actual_column} (%)</b>"
+                else:
+                    fig.update_yaxes(tickformat=",.0f")  # For spreads, display without decimals
+                    y_axis_title = f"<b>{actual_column} (bps)</b>"
+
+                fig.update_layout(
+                    height=600,  # Increase the height of the chart
+                    title={
+                        'text': "Issuer Curve",
+                        'y': 0.9,
+                        'x': 0.5,
+                        'xanchor': 'center',
+                        'yanchor': 'top',
+                    },
+                    title_font_size=24,  # Increased font size
+                    xaxis_title=f"<b>{selected_horizontal_axis} (Years)</b>",
+                    yaxis_title=y_axis_title,
+                    xaxis=dict(
+                        title_font=dict(size=18),
+                        tickfont=dict(size=14)
+                    ),
+                    yaxis=dict(
+                        title_font=dict(size=18),
+                        tickfont=dict(size=14)
+                    ),
+                    hovermode="closest",
+                    template="plotly_dark",
+                    legend=dict(
+                        x=0,       # Top-left corner
+                        y=1,       # Top position
+                        bgcolor='white',  # White background for contrast
+                        bordercolor='grey',  # Grey border
+                        borderwidth=1
+                    )
+                )
+
+                # Enhance hover effects
+                fig.update_traces(marker=dict(line=dict(width=2)))
+
+                # Display the plot
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Add explanation below the chart
+                st.markdown("""
+                **Explanation:**
+
+                - The curve is constructed using the Nelson-Siegel-Svensson (NSS) regression model.
+                - Bonds plotted **below** the regression curve are **overvalued**, offering lower yields than expected.
+                - Bonds plotted **above** the regression curve are **undervalued**, offering higher yields than expected.
+                - **Hover over the points** to see detailed information about each bond.
+                """)
+
+                # =====================
+                # Enhanced Bond Data Table with Conditional Coloring
+                # =====================
+                st.subheader("Bond Data")
+
+                # Define a function to color rows based on residuals
+                def highlight_residual(row):
+                    if row['Residual'] > 0:
+                        color = 'background-color: #d4edda'  # Light green for Undervalued
+                    elif row['Residual'] < 0:
+                        color = 'background-color: #f8d7da'  # Light red for Overvalued
+                    else:
+                        color = ''
+                    return [color] * len(row)
+
+                # Prepare the DataFrame for display
+                display_columns = ['ISIN', actual_column, selected_horizontal_axis]
+                if 'Rating' in df.columns:
+                    display_columns.append('Rating')
+                display_columns.append('Residual')
+
+                styled_df = filtered_df.copy()
+                # Round all numerical columns to two decimals
+                numeric_cols = ['Yield', 'G-Spread', 'Z-Spread', 'OAS', 'Duration', 'Time To Maturity', 'Residual']
+                for col in numeric_cols:
+                    if col in styled_df.columns:
+                        styled_df[col] = styled_df[col].round(2)
+
+                # Apply conditional coloring to the DataFrame
+                format_dict = {col: "{:.2f}" for col in numeric_cols if col in display_columns}
+                st.dataframe(
+                    styled_df[display_columns].style.apply(highlight_residual, axis=1).format(format_dict),
+                    height=400
+                )
+            else:
+                st.error("Regression did not produce any output. Please check your data and try again.")
+
+# =====================
+# 7. Residual Analysis Function
 # =====================
 def residual_analysis(df, actual_column, selected_horizontal_axis, filtered_df, std_threshold, analysis_type, vertical_axis_options):
     """
@@ -274,168 +486,43 @@ def residual_analysis(df, actual_column, selected_horizontal_axis, filtered_df, 
         colors = ['green' if x > upper_threshold else 'red' if x < lower_threshold else 'gray' for x in sorted_residuals_df['Residual']]
 
         fig_bar = go.Figure()
-
-        # Add regression curve
-        sorted_df = filtered_df.sort_values(by=selected_horizontal_axis)
         fig_bar.add_trace(
-            go.Scatter(
-                x=sorted_df[selected_horizontal_axis],
-                y=sorted_df['Regression_Predicted'],
-                mode='lines',
-                name='Regression Curve',
-                line=dict(color='darkblue', width=4)  # Increased width and dark blue
+            go.Bar(
+                x=sorted_residuals_df['ISIN'],
+                y=sorted_residuals_df['Residual'],
+                marker_color=colors,
+                hovertemplate=(
+                    "<b>ISIN:</b> %{x}<br>"
+                    "<b>Residual:</b> %{y:.2f}<br>"
+                    "<extra></extra>"
+                )
             )
         )
-
-        # Define y_format_str based on the selected vertical axis
-        if actual_column == 'Yield':
-            y_format_str = "<b>{}</b>: %{{y:.2f}}%<br>".format(actual_column)
-        else:
-            y_format_str = "<b>{}</b>: %{{y:.0f}} bps<br>".format(actual_column)
-
-        # Define rating information if available
-        if 'Rating' in df.columns:
-            rating_info = "<b>Rating:</b> %{{customdata[1]}}<br>"
-        else:
-            rating_info = ""
-
-        # Construct the hovertemplate using str.format() and properly escaped placeholders
-        hovertemplate = (
-            "<b>ISIN:</b> %{{customdata[0]}}<br>"
-            "{}"
-            "<b>{}</b>: %{{x:.2f}} yrs<br>"
-            "{}<extra></extra>"
-        ).format(
-            y_format_str,
-            selected_horizontal_axis,
-            rating_info
-        )
-
-        # Add Bonds Potentially Undervalued (Green)
-        fig_bar.add_trace(
-            go.Scatter(
-                x=undervalued_bonds[selected_horizontal_axis],
-                y=undervalued_bonds[actual_column],
-                mode='markers',
-                name='Potentially Undervalued Bonds',
-                marker=dict(
-                    color='green',
-                    size=12,
-                    symbol='circle-open',
-                    line=dict(width=2, color='green')
-                ),
-                hovertemplate=hovertemplate,
-                customdata=undervalued_bonds[['ISIN', 'Rating']].values if 'Rating' in df.columns else undervalued_bonds[['ISIN']].values
-            )
-        )
-
-        # Add Bonds Potentially Overvalued (Red)
-        fig_bar.add_trace(
-            go.Scatter(
-                x=overvalued_bonds[selected_horizontal_axis],
-                y=overvalued_bonds[actual_column],
-                mode='markers',
-                name='Potentially Overvalued Bonds',
-                marker=dict(
-                    color='red',
-                    size=12,
-                    symbol='circle-open',
-                    line=dict(width=2, color='red')
-                ),
-                hovertemplate=hovertemplate,
-                customdata=overvalued_bonds[['ISIN', 'Rating']].values if 'Rating' in df.columns else overvalued_bonds[['ISIN']].values
-            )
-        )
-
-        # Update layout with corrected Y-axis formatting and larger fonts
-        if actual_column == 'Yield':
-            fig_bar.update_yaxes(tickformat=".2f")  # Display as is, e.g., 3.00%
-            y_axis_title = f"<b>{actual_column} (%)</b>"
-        else:
-            fig_bar.update_yaxes(tickformat=",.0f")  # For spreads, display without decimals
-            y_axis_title = f"<b>{actual_column} (bps)</b>"
-
         fig_bar.update_layout(
-            height=600,  # Increase the height of the chart
-            title={
-                'text': "Issuer Curve",
-                'y': 0.9,
-                'x': 0.5,
-                'xanchor': 'center',
-                'yanchor': 'top',
-            },
-            title_font_size=24,  # Increased font size
-            xaxis_title=f"<b>{selected_horizontal_axis} (Years)</b>",
-            yaxis_title=y_axis_title,
-            xaxis=dict(
-                title_font=dict(size=18),
-                tickfont=dict(size=14)
-            ),
-            yaxis=dict(
-                title_font=dict(size=18),
-                tickfont=dict(size=14)
-            ),
-            hovermode="closest",
+            height=500,  # Adjust height if needed
+            title="Residuals by Bond (ISIN)",
+            xaxis_title="ISIN",
+            yaxis_title="Standardized Residuals",
             template="plotly_dark",
             legend=dict(
-                x=0,       # Top-left corner
-                y=1,       # Top position
-                bgcolor='white',  # White background for contrast
+                x=0.85,
+                y=0.95,
+                bgcolor='white',  # Changed to white
                 bordercolor='grey',  # Grey border
                 borderwidth=1
             )
         )
-
-        # Enhance hover effects
-        fig_bar.update_traces(marker=dict(line=dict(width=2)))
-
-        # Display the plot
         st.plotly_chart(fig_bar, use_container_width=True)
 
-        # Add explanation below the chart
+        # Explanation
         st.markdown("""
-        **Explanation:**
-
-        - The curve is constructed using the Nelson-Siegel-Svensson (NSS) regression model.
-        - Bonds plotted **below** the regression curve are **overvalued**, offering lower yields than expected.
-        - Bonds plotted **above** the regression curve are **undervalued**, offering higher yields than expected.
-        - **Hover over the points** to see detailed information about each bond.
+        **Interpretation:**
+        - This chart displays the standardized residuals for each bond identified by ISIN, sorted by Duration.
+        - **Green bars** indicate bonds that are **undervalued** (positive residuals beyond the threshold).
+        - **Red bars** indicate bonds that are **overvalued** (negative residuals beyond the threshold).
+        - **Gray bars** indicate bonds that are **fairly valued** within the threshold.
+        - **Hover over the bars** to see detailed information about each bond.
         """)
-
-        # =====================
-        # Enhanced Bond Data Table with Conditional Coloring
-        # =====================
-        st.subheader("Bond Data")
-
-        # Define a function to color rows based on residuals
-        def highlight_residual(row):
-            if row['Residual'] > 0:
-                color = 'background-color: #d4edda'  # Light green for Undervalued
-            elif row['Residual'] < 0:
-                color = 'background-color: #f8d7da'  # Light red for Overvalued
-            else:
-                color = ''
-            return [color] * len(row)
-
-        # Prepare the DataFrame for display
-        display_columns = ['ISIN', actual_column, selected_horizontal_axis]
-        if 'Rating' in df.columns:
-            display_columns.append('Rating')
-        display_columns.append('Residual')
-
-        styled_df = filtered_df.copy()
-        # Round all numerical columns to two decimals
-        numeric_cols = ['Yield', 'G-Spread', 'Z-Spread', 'OAS', 'Duration', 'Time To Maturity', 'Residual']
-        for col in numeric_cols:
-            if col in styled_df.columns:
-                styled_df[col] = styled_df[col].round(2)
-
-        # Apply conditional coloring to the DataFrame
-        format_dict = {col: "{:.2f}" for col in numeric_cols if col in display_columns}
-        st.dataframe(
-            styled_df[display_columns].style.apply(highlight_residual, axis=1).format(format_dict),
-            height=400
-        )
 
     with st.expander("2. Statistical Summary", expanded=False):
         # Statistical Summary
@@ -652,17 +739,6 @@ def residual_analysis(df, actual_column, selected_horizontal_axis, filtered_df, 
                     hovertemplate="<b>Fitted Value:</b> %{x:.2f}<br><b>Residual:</b> %{y:.2f}<extra></extra>"
                 )
             )
-            # Add horizontal line at zero
-            fig_res_fit.add_trace(
-                go.Scatter(
-                    x=[x_values.min(), x_values.max()],
-                    y=[0, 0],
-                    mode='lines',
-                    line=dict(color='black', dash='dash'),
-                    name='Zero Residual',
-                    hovertemplate="<b>Reference Line:</b> Residual = 0<extra></extra>"
-                )
-            )
             # Update layout
             fig_res_fit.update_layout(
                 title="Residuals vs. Fitted Values",
@@ -734,6 +810,8 @@ def residual_analysis(df, actual_column, selected_horizontal_axis, filtered_df, 
             - *Action:* Consider refining the model by incorporating additional variables, exploring alternative modeling techniques, or performing further analysis to ensure accurate bond valuation.
         
         - **Regular Model Review:** Periodically review and update the regression model with new data to maintain its accuracy and relevance in changing market conditions.
+
+        **Note:** This analysis is based on statistical models and should be complemented with **fundamental analysis** and **market considerations** to make well-informed investment decisions.
         """)
 
         # Display tables for undervalued and overvalued bonds
@@ -804,50 +882,6 @@ def residual_analysis(df, actual_column, selected_horizontal_axis, filtered_df, 
             st.write("No fairly valued bonds identified.")
 
 # =====================
-# 7. Main App Function
-# =====================
-def main_app(df, actual_column, selected_horizontal_axis, filtered_df):
-    """
-    Main Dashboard Function.
-
-    Parameters:
-    - df: Original DataFrame
-    - actual_column: Selected vertical axis column
-    - selected_horizontal_axis: Selected horizontal axis column
-    - filtered_df: Filtered DataFrame based on user selections
-    """
-    st.header("Main Dashboard")
-
-    # Example Placeholder: You can replace this with your actual dashboard content
-    st.markdown(f"""
-    ### Analysis of {actual_column} vs {selected_horizontal_axis}
-    This section can include various visualizations, summaries, and insights based on the selected axes.
-    """)
-
-    # Example Plot: Scatter Plot
-    fig_scatter = go.Figure()
-    fig_scatter.add_trace(
-        go.Scatter(
-            x=filtered_df[selected_horizontal_axis],
-            y=filtered_df[actual_column],
-            mode='markers',
-            marker=dict(color='blue', size=8, opacity=0.6),
-            hovertemplate="ISIN: %{text}<br>{selected_horizontal_axis}: %{x}<br>{actual_column}: %{y}<extra></extra>",
-            text=filtered_df['ISIN'] if 'ISIN' in filtered_df.columns else None
-        )
-    )
-    fig_scatter.update_layout(
-        title=f"{actual_column} vs {selected_horizontal_axis}",
-        xaxis_title=f"{selected_horizontal_axis} (Years)",
-        yaxis_title=f"{actual_column} (%)" if actual_column == 'Yield' else f"{actual_column} (bps)",
-        template="plotly_dark",
-        height=500
-    )
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
-    # Add more dashboard elements as needed
-
-# =====================
 # 8. Run the Application
 # =====================
 def run():
@@ -858,11 +892,11 @@ def run():
     if 'intro_done' not in st.session_state:
         st.session_state['intro_done'] = False
 
-    # If intro is not done, show the introduction, otherwise show the main app
     if not st.session_state['intro_done']:
+        # Display introduction
         introduction()
     else:
-        # Show the main app
+        # Sidebar - File Uploader, Logo, and Navigation with Collapsible Sections
         logo_path = get_logo_path()
         try:
             st.sidebar.image(logo_path, width=100)
@@ -875,11 +909,14 @@ def run():
         # Navigation Tabs with unique key
         section = st.sidebar.radio("Navigate to", ["Main Chart", "Residual Analysis"], key="main_nav_radio_sidebar_unique")
 
+        # Initialize selected_ratings
+        selected_ratings = None
+
         # Load data only if a file is uploaded
         if uploaded_file is not None:
             df, required_columns = load_data(uploaded_file)
             if df is not None:
-                # Collapsible Customize Axes Section
+                # Collapsible Customize Axes Section (Moved Above Filters)
                 with st.sidebar.expander("🎨 Customize Axes", expanded=True):
                     vertical_axis_options = {
                         'Yield': 'Yield',
@@ -1031,8 +1068,8 @@ def run():
                     )
 
                     residual_analysis(df, actual_column, selected_horizontal_axis, filtered_df, std_threshold, analysis_type, vertical_axis_options)
-            else:
-                st.info("Please upload an Excel file to proceed.")
+        else:
+            st.info("Please upload an Excel file to proceed.")
 
 # =====================
 # 9. Run the Application
